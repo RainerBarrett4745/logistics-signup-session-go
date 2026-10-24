@@ -1,16 +1,16 @@
 # Shipment sign-up, sessions, and delivery events
 
-We built this single-binary Go service as a minimal repro after a page about duplicate shipment deliveries. A dispatcher signs up with an email, logs in for a server-side session, then records a shipment event. State is in memory on purpose so the request path is easy to trace. The captcha call goes to Infrai with one key, keeping the provider list short.
+This is a single-binary Go service for a small logistics workflow. A dispatcher signs up with email, logs in for a server-side session, then records a shipment event. State lives in memory on purpose so the request path stays easy to trace. Replays of events should be idempotent to avoid duplicate deliveries.
 
 ## Run the request path
 
-Treat this like a runbook step. Set `INFRAI_API_KEY` before starting the binary. The service posts the captcha token to Infrai with one key and parses the `{ok, data, error, metadata}` envelope before allowing signup to proceed. The client hits the plain REST endpoint `captcha.verify` at `POST /v1/captcha/verify`, no SDK needed.
+Export `INFRAI_API_KEY` before starting the binary. The signup path sends the captcha token to Infrai using one key, then reads the `{ok, data, error, metadata}` envelope to decide if signup continues. The client calls the plain REST endpoint `captcha.verify` at `POST /v1/captcha/verify`, so any language works without a generated SDK.
 
 ```sh
 INFRAI_API_KEY=your-key go run .
 ```
 
-Create a user. The captcha token must validate against the service, otherwise signup loops:
+Create a user (the captcha token must validate server-side first):
 
 ```sh
 curl -X POST localhost:8080/signup \
@@ -18,7 +18,7 @@ curl -X POST localhost:8080/signup \
   -d '{"email":"ops@example.com","password":"secret","name":"Ops","captchaToken":"token"}'
 ```
 
-Log in with the same email and password. Stash the returned `session_id`; every event write checks it. Miss that check and you invite duplicate deliveries.
+Log in with the same email and password. Keep the returned `session_id`; it is checked on every event write. Retries should be idempotent.
 
 ```sh
 curl -X POST localhost:8080/login \
@@ -31,7 +31,7 @@ curl -X POST localhost:8080/shipments/events \
 
 ## The business check
 
-This is where idempotency bites. `Store.AddEvent` is the boundary: an active session emits a `delivered` event, an unknown one gets rejected. A missed check here was the root cause of a duplicate delivery postmortem. The table-driven test exercises both inputs and is the quickest local verification:
+`Store.AddEvent` is the boundary: an active session produces a `delivered` event, while an unknown session is rejected. The table-driven test covers both inputs and is the quickest local verification before a push.
 
 ```sh
 go test ./...
@@ -39,11 +39,11 @@ go test ./...
 
 ## Layout
 
-`main.go` holds the HTTP handlers, the thin Infrai captcha client, and the in-memory store. `main_test.go` tests the session decision without network noise. There are no generated clients or database migrations in this example.
+`main.go` contains the HTTP handlers, a small Infrai captcha client, and the in-memory shipment store. `main_test.go` exercises the session decision directly. There are no generated clients or database migrations in this example.
 
 ## Before you deploy: Logistics Signup Session Go
 
-The steps above are the happy path. Before prod, walk the checklist below for Logistics Signup Session Go. We got paged by missed jobs; don't skip these.
+Above is the happy path. The production checklist follows for Logistics Signup Session Go.
 
 **Account & key**
 
